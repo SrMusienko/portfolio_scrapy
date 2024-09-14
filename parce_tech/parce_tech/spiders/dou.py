@@ -2,6 +2,7 @@ from typing import Generator
 
 import scrapy
 from selenium import webdriver
+from selenium.common import TimeoutException
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -33,7 +34,7 @@ class DouSpider(scrapy.Spider):
     def __init__(self, *args, **kwargs):
         super(DouSpider, self).__init__(*args, **kwargs)
         chrome_options = Options()
-        chrome_options.add_argument("--start-maximized")
+        chrome_options.add_argument("--headless")
         service = Service(ChromeDriverManager().install())
         self.driver = webdriver.Chrome(
             service=service,
@@ -45,15 +46,25 @@ class DouSpider(scrapy.Spider):
     ) -> Generator[scrapy.Request, None, None]:
         self.driver.get(response.url)
         exp_param = response.url.split("exp=")[1]
-        while True:
+        retry_count = 3
+
+        while retry_count > 0:
             try:
-                more_button = WebDriverWait(self.driver, 10).until(
+                more_button = WebDriverWait(self.driver, 15).until(
                     EC.element_to_be_clickable((By.CSS_SELECTOR, "div.more-btn a"))
                 )
                 more_button.click()
-
+                self.logger.info("The 'Load more' button has been pressed.")
+            except TimeoutException:
+                self.logger.info("Button not found within 15 seconds, try again.")
+                retry_count -= 1
+                if retry_count == 0:
+                    self.logger.info(
+                        "The 'Load More' button has not loaded after several attempts."
+                    )
+                    break
             except Exception as e:
-                self.logger.info(f"The button is absent or error: {e}")
+                self.logger.info(f"An error occurred while pressing the button: {e}")
                 break
 
         page_source = self.driver.page_source
@@ -98,7 +109,6 @@ class DouSpider(scrapy.Spider):
         content = response.css("div.b-typo.vacancy-section *::text").getall()
         content_text = " ".join([text.strip() for text in content if text.strip()])
         content_text = content_text.replace(u"\xa0", u" ")
-        # pdb.set_trace()
 
         tags = [keyword for keyword in self.keywords if keyword.lower() in content_text.lower()]
 
@@ -113,6 +123,9 @@ class DouSpider(scrapy.Spider):
         }
 
     def close(self, reason):
-        if self.driver:
-            self.driver.quit()
+        if hasattr(self, "driver") and self.driver:
+            try:
+                self.driver.quit()
+            except Exception as e:
+                self.logger.error(f"Error during driver close: {e}")
         super().close(reason)
